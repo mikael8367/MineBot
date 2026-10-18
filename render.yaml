@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: minecraft-ai-companion
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: MC_HOST
+        value: catalufa.aternos.host
+      - key: MC_PORT
+        value: "40492"
+      - key: MC_VERSION
+        value: "26.3"
+      - key: BOT_USERNAME
+        value: CompanheiroAI
+      - key: PANEL_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
