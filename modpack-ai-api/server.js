@@ -4,7 +4,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const HUB_API_KEY = process.env.HUB_API_KEY || "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const HUB_ORIGIN = process.env.HUB_ORIGIN || "https://mikael-modpack-hub.onrender.com";
 const MAX_MESSAGE_CHARS = 12000;
 
@@ -80,9 +80,9 @@ app.post("/v1/chat", requireHubKey, rateLimit, async (req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
       body:JSON.stringify({
         systemInstruction:{parts:[{text:SYSTEM_INSTRUCTION}]},
         contents,
