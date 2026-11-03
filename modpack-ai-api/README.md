@@ -13,6 +13,6 @@ Serviço Node.js independente do Mikael Modpack Hub.
 - `HUB_API_KEY`: segredo compartilhado com o backend do Hub.
 - `HUB_ORIGIN`: `https://mikael-modpack-hub.onrender.com`
 - `GEMINI_API_KEY`: chave do Google AI Studio (configurar nos Secrets do Render).
-- `GEMINI_MODEL`: padrão `gemini-2.5-flash`.
+- `GEMINI_MODEL`: padrão `gemini-3.8-flash`.
 
 A API não armazena conversas. A rota `POST /v1/chat` exige o cabeçalho `X-API-Key`.
