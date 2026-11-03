@@ -12,7 +12,7 @@ function safeProviderMessage(value) {
   return String(value || "Sem detalhes fornecidos pelo provedor.")
     .replaceAll(GEMINI_API_KEY, "[CHAVE REDIGIDA]")
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[CHAVE REDIGIDA]")
-    .replace(/[\\r\\n\\t]+/g, " ")
+    .replace(/[\r\n\t]+/g, " ")
     .slice(0, 500);
 }
 
@@ -123,7 +123,7 @@ app.post("/v1/chat", requireHubKey, rateLimit, async (req, res) => {
       return res.status(502).json({ok:false,code:"PROVIDER_SERVER_ERROR",error:"O serviço do Google está apresentando uma falha temporária. Tente novamente."});
     }
 
-    const answer = data?.candidates?.[0]?.content?.parts?.map(p=>p.text || "").join("\\n").trim();
+    const answer = data?.candidates?.[0]?.content?.parts?.map(p=>p.text || "").join("\n").trim();
     if (!answer) {
       const finishReason = data?.candidates?.[0]?.finishReason || "NO_CANDIDATE";
       const blockReason = data?.promptFeedback?.blockReason || null;
