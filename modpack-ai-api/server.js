@@ -5,6 +5,7 @@ const PORT = Number(process.env.PORT || 10000);
 const HUB_API_KEY = process.env.HUB_API_KEY || "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash-lite";
 const HUB_ORIGIN = process.env.HUB_ORIGIN || "https://mikael-modpack-hub.onrender.com";
 const MAX_MESSAGE_CHARS = 12000;
 
@@ -72,6 +73,7 @@ app.get("/health", (_req, res) => res.json({
   service:"mikael-ai-modpack-api",
   provider:"gemini",
   model:GEMINI_MODEL,
+  fallbackModel:GEMINI_FALLBACK_MODEL,
   aiConfigured:Boolean(GEMINI_API_KEY),
   hubKeyConfigured:Boolean(HUB_API_KEY)
 }));
@@ -93,26 +95,44 @@ app.post("/v1/chat", requireHubKey, rateLimit, async (req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
     const requestBody = JSON.stringify({
       systemInstruction:{parts:[{text:SYSTEM_INSTRUCTION}]},
       contents,
       generationConfig:{maxOutputTokens:1800}
     });
-    let response;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      response = await fetch(endpoint, {
-        method:"POST",
-        headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
-        body:requestBody,
-        signal:controller.signal
-      });
-      // 503 indica indisponibilidade temporária/capacidade do provedor.
-      // Limitar a 2 novas tentativas evita espera excessiva e loops.
-      if (response.status !== 503 || attempt === 2) break;
-      const delayMs = (1000 * (2 ** attempt)) + Math.floor(Math.random() * 300);
-      console.warn(`[Gemini] HTTP 503; nova tentativa ${attempt + 2}/3 em ${delayMs}ms.`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+    async function requestModel(model) {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+      let result;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        result = await fetch(endpoint, {
+          method:"POST",
+          headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
+          body:requestBody,
+          signal:controller.signal
+        });
+        // Repetir somente 503, com limite fixo para evitar loops.
+        if (result.status !== 503 || attempt === 2) break;
+        const delayMs = (1000 * (2 ** attempt)) + Math.floor(Math.random() * 300);
+        console.warn(`[Gemini] HTTP 503 em ${model}; nova tentativa ${attempt + 2}/3 em ${delayMs}ms.`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+      return result;
+    }
+
+    let activeModel = GEMINI_MODEL;
+    let response = await requestModel(GEMINI_MODEL);
+    if (response.status === 503 && GEMINI_FALLBACK_MODEL && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+      console.warn(`[Gemini] Modelo principal indisponível após 3 tentativas; acionando fallback ${GEMINI_FALLBACK_MODEL}.`);
+      activeModel = GEMINI_FALLBACK_MODEL;
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent`,
+        {
+          method:"POST",
+          headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
+          body:requestBody,
+          signal:controller.signal
+        }
+      );
     }
     const raw = await response.text();
     let data = {};
@@ -141,7 +161,7 @@ app.post("/v1/chat", requireHubKey, rateLimit, async (req, res) => {
       logProviderFailure({httpStatus:response.status,code:"EMPTY_GENERATION",finishReason,blockReason});
       return res.status(502).json({ok:false,code:"EMPTY_GENERATION",error:"A IA não gerou texto para esta mensagem. Reformule a pergunta e tente novamente."});
     }
-    return res.json({ok:true,answer,model:GEMINI_MODEL});
+    return res.json({ok:true,answer,model:activeModel,fallbackUsed:activeModel !== GEMINI_MODEL});
   } catch (error) {
     const timedOut = error?.name === "AbortError";
     logProviderFailure({code:timedOut ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK_ERROR",message:safeProviderMessage(error?.message || error?.name || "Falha de rede")});
