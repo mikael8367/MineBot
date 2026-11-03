@@ -8,6 +8,19 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const HUB_ORIGIN = process.env.HUB_ORIGIN || "https://mikael-modpack-hub.onrender.com";
 const MAX_MESSAGE_CHARS = 12000;
 
+function safeProviderMessage(value) {
+  return String(value || "Sem detalhes fornecidos pelo provedor.")
+    .replaceAll(GEMINI_API_KEY, "[CHAVE REDIGIDA]")
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[CHAVE REDIGIDA]")
+    .replace(/[\\r\\n\\t]+/g, " ")
+    .slice(0, 500);
+}
+
+function logProviderFailure(details) {
+  // Nunca registrar headers, chaves, histórico ou conteúdo da conversa.
+  console.error("[Gemini] Falha na solicitação:", JSON.stringify(details));
+}
+
 app.disable("x-powered-by");
 app.use(express.json({ limit: "256kb" }));
 app.use((req, res, next) => {
@@ -86,25 +99,44 @@ app.post("/v1/chat", requireHubKey, rateLimit, async (req, res) => {
       body:JSON.stringify({
         systemInstruction:{parts:[{text:SYSTEM_INSTRUCTION}]},
         contents,
-        generationConfig:{temperature:0.35, maxOutputTokens:1800}
+        generationConfig:{maxOutputTokens:1800}
       }),
       signal:controller.signal
     });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const status = response.status === 429 ? 429 : 502;
-      return res.status(status).json({ok:false,error:response.status===429
-        ? "O provedor de IA atingiu o limite temporário. Tente novamente mais tarde."
-        : "O provedor de IA não conseguiu responder. Verifique a chave e a configuração do modelo no Render."});
+    const raw = await response.text();
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      logProviderFailure({httpStatus:response.status,code:"INVALID_PROVIDER_RESPONSE",message:"O provedor retornou conteúdo que não é JSON."});
+      return res.status(502).json({ok:false,code:"INVALID_PROVIDER_RESPONSE",error:"O serviço de IA retornou uma resposta inválida. Tente novamente."});
     }
-    const answer = data?.candidates?.[0]?.content?.parts?.map(p=>p.text || "").join("\n").trim();
-    if (!answer) return res.status(502).json({ok:false,error:"A IA retornou uma resposta vazia. Tente novamente."});
+
+    if (!response.ok) {
+      const providerCode = data?.error?.status || data?.error?.code || "UNKNOWN_PROVIDER_ERROR";
+      const providerMessage = safeProviderMessage(data?.error?.message);
+      logProviderFailure({httpStatus:response.status,code:String(providerCode).slice(0,100),message:providerMessage});
+      if (response.status === 429) return res.status(429).json({ok:false,code:"PROVIDER_RATE_LIMIT",error:"A IA atingiu o limite temporário de uso. Aguarde um pouco e tente novamente."});
+      if (response.status === 401 || response.status === 403) return res.status(502).json({ok:false,code:"PROVIDER_AUTH_ERROR",error:"O Google recusou a autenticação da IA. Confira se a chave Gemini está válida e se a API Gemini está habilitada no projeto."});
+      if (response.status === 404) return res.status(502).json({ok:false,code:"PROVIDER_MODEL_NOT_FOUND",error:"O modelo configurado não foi encontrado pelo Google. Confira GEMINI_MODEL nos Secrets do Render."});
+      if (response.status >= 400 && response.status < 500) return res.status(502).json({ok:false,code:"PROVIDER_REQUEST_REJECTED",error:"O Google rejeitou o formato ou os parâmetros da solicitação. O erro detalhado foi registrado nos logs."});
+      return res.status(502).json({ok:false,code:"PROVIDER_SERVER_ERROR",error:"O serviço do Google está apresentando uma falha temporária. Tente novamente."});
+    }
+
+    const answer = data?.candidates?.[0]?.content?.parts?.map(p=>p.text || "").join("\\n").trim();
+    if (!answer) {
+      const finishReason = data?.candidates?.[0]?.finishReason || "NO_CANDIDATE";
+      const blockReason = data?.promptFeedback?.blockReason || null;
+      logProviderFailure({httpStatus:response.status,code:"EMPTY_GENERATION",finishReason,blockReason});
+      return res.status(502).json({ok:false,code:"EMPTY_GENERATION",error:"A IA não gerou texto para esta mensagem. Reformule a pergunta e tente novamente."});
+    }
     return res.json({ok:true,answer,model:GEMINI_MODEL});
   } catch (error) {
     const timedOut = error?.name === "AbortError";
-    return res.status(timedOut ? 504 : 502).json({ok:false,error:timedOut
+    logProviderFailure({code:timedOut ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK_ERROR",message:safeProviderMessage(error?.message || error?.name || "Falha de rede")});
+    return res.status(timedOut ? 504 : 502).json({ok:false,code:timedOut ? "PROVIDER_TIMEOUT" : "PROVIDER_NETWORK_ERROR",error:timedOut
       ? "A resposta demorou demais. Tente novamente."
-      : "Não foi possível conectar ao provedor de IA."});
+      : "Não foi possível conectar ao provedor de IA. O erro técnico foi registrado nos logs."});
   } finally {
     clearTimeout(timeout);
   }
