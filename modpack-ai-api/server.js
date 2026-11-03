@@ -100,39 +100,47 @@ app.post("/v1/chat", requireHubKey, rateLimit, async (req, res) => {
       contents,
       generationConfig:{maxOutputTokens:1800}
     });
-    async function requestModel(model) {
+    async function requestModel(model, maxAttempts = 2, requestTimeoutMs = 10000) {
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
       let result;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        result = await fetch(endpoint, {
-          method:"POST",
-          headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
-          body:requestBody,
-          signal:controller.signal
-        });
-        // Repetir somente 503, com limite fixo para evitar loops.
-        if (result.status !== 503 || attempt === 2) break;
-        const delayMs = (1000 * (2 ** attempt)) + Math.floor(Math.random() * 300);
-        console.warn(`[Gemini] HTTP 503 em ${model}; nova tentativa ${attempt + 2}/3 em ${delayMs}ms.`);
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const requestController = new AbortController();
+        const requestTimer = setTimeout(() => requestController.abort(), requestTimeoutMs);
+        const abortFromOverallTimeout = () => requestController.abort();
+        controller.signal.addEventListener("abort", abortFromOverallTimeout, {once:true});
+        try {
+          result = await fetch(endpoint, {
+            method:"POST",
+            headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
+            body:requestBody,
+            signal:requestController.signal
+          });
+        } catch (error) {
+          if (controller.signal.aborted) throw error;
+          if (error?.name !== "AbortError") throw error;
+          console.warn(`[Gemini] Tempo limite de ${requestTimeoutMs}ms atingido em ${model} (tentativa ${attempt + 1}/${maxAttempts}).`);
+          result = new Response(JSON.stringify({error:{status:"UNAVAILABLE",message:"Tempo limite do provedor atingido."}}), {
+            status:503, headers:{"Content-Type":"application/json"}
+          });
+        } finally {
+          clearTimeout(requestTimer);
+          controller.signal.removeEventListener("abort", abortFromOverallTimeout);
+        }
+        // Repetir somente 503/timeouts, com limite curto e tempo por chamada.
+        if (result.status !== 503 || attempt === maxAttempts - 1) break;
+        const delayMs = 800 + Math.floor(Math.random() * 250);
+        console.warn(`[Gemini] HTTP 503 em ${model}; nova tentativa ${attempt + 2}/${maxAttempts} em ${delayMs}ms.`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
       return result;
     }
 
     let activeModel = GEMINI_MODEL;
-    let response = await requestModel(GEMINI_MODEL);
+    let response = await requestModel(GEMINI_MODEL, 2, 10000);
     if (response.status === 503 && GEMINI_FALLBACK_MODEL && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
-      console.warn(`[Gemini] Modelo principal indisponível após 3 tentativas; acionando fallback ${GEMINI_FALLBACK_MODEL}.`);
+      console.warn(`[Gemini] Modelo principal indisponível após 2 tentativas; acionando fallback ${GEMINI_FALLBACK_MODEL}.`);
       activeModel = GEMINI_FALLBACK_MODEL;
-      response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent`,
-        {
-          method:"POST",
-          headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
-          body:requestBody,
-          signal:controller.signal
-        }
-      );
+      response = await requestModel(activeModel, 1, 12000);
     }
     const raw = await response.text();
     let data = {};
