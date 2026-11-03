@@ -93,16 +93,27 @@ app.post("/v1/chat", requireHubKey, rateLimit, async (req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
-      method:"POST",
-      headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
-      body:JSON.stringify({
-        systemInstruction:{parts:[{text:SYSTEM_INSTRUCTION}]},
-        contents,
-        generationConfig:{maxOutputTokens:1800}
-      }),
-      signal:controller.signal
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
+    const requestBody = JSON.stringify({
+      systemInstruction:{parts:[{text:SYSTEM_INSTRUCTION}]},
+      contents,
+      generationConfig:{maxOutputTokens:1800}
     });
+    let response;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      response = await fetch(endpoint, {
+        method:"POST",
+        headers:{"Content-Type":"application/json","x-goog-api-key":GEMINI_API_KEY},
+        body:requestBody,
+        signal:controller.signal
+      });
+      // 503 indica indisponibilidade temporária/capacidade do provedor.
+      // Limitar a 2 novas tentativas evita espera excessiva e loops.
+      if (response.status !== 503 || attempt === 2) break;
+      const delayMs = (1000 * (2 ** attempt)) + Math.floor(Math.random() * 300);
+      console.warn(`[Gemini] HTTP 503; nova tentativa ${attempt + 2}/3 em ${delayMs}ms.`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
     const raw = await response.text();
     let data = {};
     try {
