@@ -1,0 +1,17 @@
+{
+  "name": "mikael-modpack-ai-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API independente da Mikael AI especializada em Minecraft e modpacks",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
